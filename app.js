@@ -1,4 +1,4 @@
-const STORAGE_KEY = 'delivery-route-app-state-v2';
+const STORAGE_KEY = 'delivery-route-app-state-v3';
 
 const state = {
   routeName: '',
@@ -8,7 +8,9 @@ const state = {
   mapPickMode: false,
   tracking: false,
   watchId: null,
-  currentPosition: null
+  currentPosition: null,
+  savedRoutes: [],
+  selectedSavedRouteId: null
 };
 
 const dom = {
@@ -23,7 +25,11 @@ const dom = {
   distanceText: document.getElementById('distanceText'),
   stopList: document.getElementById('stopList'),
   template: document.getElementById('stopItemTemplate'),
-  installStatus: document.getElementById('installStatus')
+  installStatus: document.getElementById('installStatus'),
+  currentRouteStatus: document.getElementById('currentRouteStatus'),
+  savedRouteCount: document.getElementById('savedRouteCount'),
+  savedRoutesList: document.getElementById('savedRoutesList'),
+  savedRouteTemplate: document.getElementById('savedRouteItemTemplate')
 };
 
 const isStandalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
@@ -69,32 +75,44 @@ function formatDistance(meters) {
   return meters >= 1000 ? `${(meters / 1000).toFixed(2)} km` : `${Math.round(meters)} m`;
 }
 
-function makeStopIcon(label, delivered) {
-  return L.divIcon({
-    className: '',
-    html: `<div class="numbered-stop ${delivered ? '' : 'pending'}">${label}</div>`,
-    iconSize: [32, 32],
-    iconAnchor: [16, 16]
-  });
+function clone(value) {
+  return JSON.parse(JSON.stringify(value));
 }
 
-function makeCurrentIcon() {
-  return L.divIcon({
-    className: '',
-    html: '<div class="current-marker-dot"></div>',
-    iconSize: [18, 18],
-    iconAnchor: [9, 9]
-  });
+function deliveredCountFromStops(stops) {
+  return stops.filter(stop => stop.deliveredOrder !== null).length;
 }
 
-function persist() {
-  const payload = {
+function snapshotCurrentRoute() {
+  return {
+    routeName: state.routeName,
+    stops: clone(state.stops),
+    gpsTrail: clone(state.gpsTrail),
+    distanceMeters: state.distanceMeters
+  };
+}
+
+function applyRouteSnapshot(route) {
+  state.routeName = route.routeName || '';
+  state.stops = Array.isArray(route.stops) ? clone(route.stops) : [];
+  state.gpsTrail = Array.isArray(route.gpsTrail) ? clone(route.gpsTrail) : [];
+  state.distanceMeters = Number(route.distanceMeters || 0);
+  dom.routeName.value = state.routeName;
+}
+
+function workspacePayload() {
+  return {
     routeName: state.routeName,
     stops: state.stops,
     gpsTrail: state.gpsTrail,
-    distanceMeters: state.distanceMeters
+    distanceMeters: state.distanceMeters,
+    savedRoutes: state.savedRoutes,
+    selectedSavedRouteId: state.selectedSavedRouteId
   };
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+}
+
+function persist() {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(workspacePayload()));
 }
 
 function load() {
@@ -102,10 +120,13 @@ function load() {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return;
     const parsed = JSON.parse(raw);
+
     state.routeName = parsed.routeName || '';
     state.stops = Array.isArray(parsed.stops) ? parsed.stops : [];
     state.gpsTrail = Array.isArray(parsed.gpsTrail) ? parsed.gpsTrail : [];
     state.distanceMeters = Number(parsed.distanceMeters || 0);
+    state.savedRoutes = Array.isArray(parsed.savedRoutes) ? parsed.savedRoutes : [];
+    state.selectedSavedRouteId = parsed.selectedSavedRouteId || null;
     dom.routeName.value = state.routeName;
   } catch (error) {
     console.error('load failed', error);
@@ -113,15 +134,25 @@ function load() {
 }
 
 function nextDeliveryOrder() {
-  return state.stops.filter(stop => stop.deliveredOrder !== null).length + 1;
+  return deliveredCountFromStops(state.stops) + 1;
 }
 
 function refreshSummary() {
-  const deliveredCount = state.stops.filter(stop => stop.deliveredOrder !== null).length;
+  const deliveredCount = deliveredCountFromStops(state.stops);
   dom.stopCount.textContent = `${state.stops.length}件`;
   dom.deliveredCount.textContent = `${deliveredCount}件`;
   dom.trackPointCount.textContent = `${state.gpsTrail.length}点`;
   dom.distanceText.textContent = formatDistance(state.distanceMeters);
+  dom.savedRouteCount.textContent = `${state.savedRoutes.length}件`;
+
+  if (state.selectedSavedRouteId) {
+    const selected = state.savedRoutes.find(route => route.id === state.selectedSavedRouteId);
+    if (selected) {
+      dom.currentRouteStatus.textContent = `現在表示中: 保存済み「${selected.routeName || '名称未設定'}」 / 最終保存 ${formatDateTime(selected.savedAt)}`;
+      return;
+    }
+  }
+  dom.currentRouteStatus.textContent = '現在表示中: 未保存の作業ルート';
 }
 
 function deliveredStopsInOrder() {
@@ -166,6 +197,27 @@ function renderMap() {
   setTimeout(() => map.invalidateSize(), 0);
 }
 
+function zoomToCurrentRoute() {
+  const points = [
+    ...state.stops.map(stop => [stop.lat, stop.lng]),
+    ...state.gpsTrail.map(point => [point.lat, point.lng])
+  ];
+
+  if (points.length === 0) {
+    if (state.currentPosition) {
+      map.setView([state.currentPosition.lat, state.currentPosition.lng], 17);
+    }
+    return;
+  }
+
+  if (points.length === 1) {
+    map.setView(points[0], 18);
+    return;
+  }
+
+  map.fitBounds(L.latLngBounds(points), { padding: [30, 30] });
+}
+
 function renderList() {
   dom.stopList.innerHTML = '';
   const sorted = [...state.stops].sort((a, b) => {
@@ -196,10 +248,41 @@ function renderList() {
   });
 }
 
+function renderSavedRoutes() {
+  dom.savedRoutesList.innerHTML = '';
+
+  if (state.savedRoutes.length === 0) {
+    const empty = document.createElement('li');
+    empty.className = 'empty-state';
+    empty.textContent = '保存済みルートはまだありません';
+    dom.savedRoutesList.appendChild(empty);
+    return;
+  }
+
+  const sorted = [...state.savedRoutes].sort((a, b) => new Date(b.savedAt) - new Date(a.savedAt));
+
+  sorted.forEach(route => {
+    const node = dom.savedRouteTemplate.content.firstElementChild.cloneNode(true);
+    node.classList.toggle('selected', route.id === state.selectedSavedRouteId);
+    node.querySelector('.saved-route-title').textContent = route.routeName || '名称未設定';
+    node.querySelector('.saved-route-meta').textContent = `保存 ${formatDateTime(route.savedAt)} / 配達先 ${route.stops.length}件 / 配達済み ${deliveredCountFromStops(route.stops)}件 / GPS ${route.gpsTrail.length}点 / ${formatDistance(route.distanceMeters)}`;
+
+    node.querySelector('.show-route-btn').addEventListener('click', () => {
+      loadSavedRoute(route.id);
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    });
+    node.querySelector('.export-route-btn').addEventListener('click', () => exportJson({ route }));
+    node.querySelector('.delete-route-btn').addEventListener('click', () => deleteSavedRoute(route.id));
+
+    dom.savedRoutesList.appendChild(node);
+  });
+}
+
 function renderAll() {
   refreshSummary();
   renderMap();
   renderList();
+  renderSavedRoutes();
   persist();
 }
 
@@ -279,12 +362,19 @@ function resetDeliveryOrder() {
   renderAll();
 }
 
-function clearAll() {
-  if (!confirm('配達先・GPS履歴をすべて消します。よろしいですか？')) return;
+function clearWorkspace() {
+  state.routeName = '';
   state.stops = [];
   state.gpsTrail = [];
   state.distanceMeters = 0;
+  state.selectedSavedRouteId = null;
+  dom.routeName.value = '';
   renderAll();
+}
+
+function clearAll() {
+  if (!confirm('作業中ルートを空にします。保存済みルート一覧は残ります。よろしいですか？')) return;
+  clearWorkspace();
 }
 
 function setGpsStatus(text) {
@@ -417,27 +507,22 @@ function escapeHtml(value) {
     .replaceAll("'", '&#39;');
 }
 
-async function exportJson() {
-  const payload = {
-    exportedAt: new Date().toISOString(),
-    routeName: state.routeName,
-    stops: state.stops,
-    gpsTrail: state.gpsTrail,
-    distanceMeters: state.distanceMeters
-  };
+function routeFileName(routeName) {
+  const cleaned = (routeName || 'delivery-route').trim().replace(/\s+/g, '-');
+  return cleaned || 'delivery-route';
+}
 
-  const route = (state.routeName || 'delivery-route').replace(/\s+/g, '-');
-  const jsonText = JSON.stringify(payload, null, 2);
-  const file = new File([jsonText], `${route}.json`, { type: 'application/json' });
+async function shareOrDownloadJson(jsonText, filename, shareTitle, shareText) {
+  const file = new File([jsonText], filename, { type: 'application/json' });
 
   if (navigator.canShare && navigator.canShare({ files: [file] })) {
     try {
       await navigator.share({
         files: [file],
-        title: '配達ルートJSON',
-        text: '配達ルートのバックアップです'
+        title: shareTitle,
+        text: shareText
       });
-      return;
+      return true;
     } catch (error) {
       if (error.name !== 'AbortError') {
         console.error('share failed', error);
@@ -449,11 +534,59 @@ async function exportJson() {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `${route}.json`;
+  a.download = filename;
   document.body.appendChild(a);
   a.click();
   a.remove();
   URL.revokeObjectURL(url);
+  return true;
+}
+
+async function exportJson(options = {}) {
+  const route = options.route || snapshotCurrentRoute();
+  const payload = {
+    format: 'delivery-route-single-v1',
+    exportedAt: new Date().toISOString(),
+    ...clone(route)
+  };
+  const filename = `${routeFileName(route.routeName)}.json`;
+  await shareOrDownloadJson(
+    JSON.stringify(payload, null, 2),
+    filename,
+    '配達ルートJSON',
+    '配達ルートのバックアップです'
+  );
+}
+
+async function exportLibraryJson() {
+  const payload = {
+    format: 'delivery-route-library-v1',
+    exportedAt: new Date().toISOString(),
+    currentRoute: snapshotCurrentRoute(),
+    selectedSavedRouteId: state.selectedSavedRouteId,
+    savedRoutes: clone(state.savedRoutes)
+  };
+  const filename = `${routeFileName(state.routeName || 'delivery-route-library')}-library.json`;
+  await shareOrDownloadJson(
+    JSON.stringify(payload, null, 2),
+    filename,
+    '保存済みルートJSON',
+    '保存済みルート一覧のバックアップです'
+  );
+}
+
+function normalizeSavedRoutes(items) {
+  return items
+    .filter(Boolean)
+    .map(item => ({
+      id: item.id || uid(),
+      routeName: item.routeName || '名称未設定',
+      stops: Array.isArray(item.stops) ? item.stops : [],
+      gpsTrail: Array.isArray(item.gpsTrail) ? item.gpsTrail : [],
+      distanceMeters: Number(item.distanceMeters || 0),
+      createdAt: item.createdAt || item.savedAt || new Date().toISOString(),
+      savedAt: item.savedAt || new Date().toISOString()
+    }));
 }
 
 function importJson(file) {
@@ -461,18 +594,89 @@ function importJson(file) {
   reader.onload = () => {
     try {
       const parsed = JSON.parse(reader.result);
-      state.routeName = parsed.routeName || '';
-      state.stops = Array.isArray(parsed.stops) ? parsed.stops : [];
-      state.gpsTrail = Array.isArray(parsed.gpsTrail) ? parsed.gpsTrail : [];
-      state.distanceMeters = Number(parsed.distanceMeters || 0);
-      dom.routeName.value = state.routeName;
+
+      if (parsed.format === 'delivery-route-library-v1') {
+        state.savedRoutes = normalizeSavedRoutes(parsed.savedRoutes || []);
+        state.selectedSavedRouteId = parsed.selectedSavedRouteId || null;
+        applyRouteSnapshot(parsed.currentRoute || {});
+        renderAll();
+        zoomToCurrentRoute();
+        alert('保存済みルート一覧を読み込みました');
+        return;
+      }
+
+      const singleRoute = {
+        routeName: parsed.routeName || '',
+        stops: Array.isArray(parsed.stops) ? parsed.stops : [],
+        gpsTrail: Array.isArray(parsed.gpsTrail) ? parsed.gpsTrail : [],
+        distanceMeters: Number(parsed.distanceMeters || 0)
+      };
+      applyRouteSnapshot(singleRoute);
+      state.selectedSavedRouteId = null;
       renderAll();
+      zoomToCurrentRoute();
+      alert('ルートを読み込みました');
     } catch (error) {
       alert('JSONの読み込みに失敗しました');
       console.error(error);
     }
   };
   reader.readAsText(file);
+}
+
+function saveCurrentRoute() {
+  const now = new Date().toISOString();
+  const routeName = state.routeName.trim() || `ルート ${formatDateTime(now)}`;
+  state.routeName = routeName;
+  dom.routeName.value = routeName;
+
+  const snapshot = {
+    id: state.selectedSavedRouteId || uid(),
+    routeName,
+    stops: clone(state.stops),
+    gpsTrail: clone(state.gpsTrail),
+    distanceMeters: state.distanceMeters,
+    createdAt: now,
+    savedAt: now
+  };
+
+  const existingIndex = state.savedRoutes.findIndex(route => route.id === snapshot.id);
+  if (existingIndex >= 0) {
+    snapshot.createdAt = state.savedRoutes[existingIndex].createdAt || now;
+    state.savedRoutes.splice(existingIndex, 1, snapshot);
+  } else {
+    state.savedRoutes.unshift(snapshot);
+  }
+
+  state.selectedSavedRouteId = snapshot.id;
+  renderAll();
+  alert('保存済みルート一覧に保存しました');
+}
+
+function loadSavedRoute(routeId) {
+  const route = state.savedRoutes.find(item => item.id === routeId);
+  if (!route) return;
+  applyRouteSnapshot(route);
+  state.selectedSavedRouteId = route.id;
+  renderAll();
+  zoomToCurrentRoute();
+}
+
+function deleteSavedRoute(routeId) {
+  const route = state.savedRoutes.find(item => item.id === routeId);
+  if (!route) return;
+  if (!confirm(`保存済みルート「${route.routeName}」を削除しますか？`)) return;
+
+  state.savedRoutes = state.savedRoutes.filter(item => item.id !== routeId);
+  if (state.selectedSavedRouteId === routeId) {
+    state.selectedSavedRouteId = null;
+  }
+  renderAll();
+}
+
+function newRouteWorkspace() {
+  if (!confirm('現在の作業ルートを新規状態にします。保存していない変更は失われます。よろしいですか？')) return;
+  clearWorkspace();
 }
 
 function bindEvents() {
@@ -484,16 +688,20 @@ function bindEvents() {
   document.getElementById('startTrackBtn').addEventListener('click', startTracking);
   document.getElementById('stopTrackBtn').addEventListener('click', stopTracking);
   document.getElementById('centerBtn').addEventListener('click', centerToCurrentPosition);
+  document.getElementById('zoomRouteBtn').addEventListener('click', zoomToCurrentRoute);
+  document.getElementById('newRouteBtn').addEventListener('click', newRouteWorkspace);
   document.getElementById('addCurrentStopBtn').addEventListener('click', addStopFromCurrentLocation);
   document.getElementById('mapPickModeBtn').addEventListener('click', toggleMapPickMode);
   document.getElementById('undoDeliveryBtn').addEventListener('click', undoLatestDelivered);
   document.getElementById('resetDeliveryOrderBtn').addEventListener('click', resetDeliveryOrder);
-  document.getElementById('clearAllBtn').addEventListener('click', clearAll);
+  document.getElementById('saveRouteBtn').addEventListener('click', saveCurrentRoute);
   document.getElementById('saveBtn').addEventListener('click', () => {
     persist();
     alert('このiPhoneのブラウザ保存領域に保存しました');
   });
-  document.getElementById('exportBtn').addEventListener('click', exportJson);
+  document.getElementById('exportBtn').addEventListener('click', () => exportJson());
+  document.getElementById('exportLibraryBtn').addEventListener('click', exportLibraryJson);
+  document.getElementById('clearAllBtn').addEventListener('click', clearAll);
   document.getElementById('importInput').addEventListener('change', (e) => {
     const file = e.target.files?.[0];
     if (file) importJson(file);

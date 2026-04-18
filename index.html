@@ -21,7 +21,7 @@
     <header class="topbar">
       <div>
         <h1>配達ルート記録アプリ</h1>
-        <p>配達先登録・訪問順の記録・移動ルートの見返し</p>
+        <p>配達先登録・訪問順の記録・移動ルートの保存と再表示</p>
       </div>
     </header>
 
@@ -47,8 +47,14 @@
             <button id="startTrackBtn">GPS記録開始</button>
             <button id="stopTrackBtn" class="secondary">GPS記録停止</button>
             <button id="centerBtn" class="secondary">現在地へ移動</button>
+            <button id="zoomRouteBtn" class="secondary">現在ルート全体を表示</button>
+          </div>
+          <div class="button-row wrap">
+            <button id="saveRouteBtn">保存済みルート一覧へ保存</button>
+            <button id="newRouteBtn" class="secondary">新しいルートを作る</button>
           </div>
           <p id="gpsStatus" class="status">GPS: 未開始</p>
+          <p id="currentRouteStatus" class="status">現在表示中: 未保存の作業ルート</p>
         </div>
 
         <div class="card">
@@ -76,7 +82,8 @@
           </div>
           <div class="button-row wrap">
             <button id="saveBtn">端末に保存</button>
-            <button id="exportBtn" class="secondary">JSON書き出し</button>
+            <button id="exportBtn" class="secondary">現在ルートをJSON書き出し</button>
+            <button id="exportLibraryBtn" class="secondary">保存済み一覧をJSON書き出し</button>
             <label class="file-label secondary">
               JSON読み込み
               <input id="importInput" type="file" accept="application/json" />
@@ -103,13 +110,24 @@
               <dt>移動距離</dt>
               <dd id="distanceText">0 m</dd>
             </div>
+            <div>
+              <dt>保存済みルート</dt>
+              <dd id="savedRouteCount">0件</dd>
+            </div>
           </dl>
         </div>
 
         <div class="card list-card">
           <div class="list-header">
+            <h2>保存済みルート一覧</h2>
+          </div>
+          <ul id="savedRoutesList" class="saved-route-list"></ul>
+        </div>
+
+        <div class="card list-card">
+          <div class="list-header">
             <h2>配達先一覧</h2>
-            <button id="clearAllBtn" class="danger">全消去</button>
+            <button id="clearAllBtn" class="danger">作業中ルートを空にする</button>
           </div>
           <ul id="stopList" class="stop-list"></ul>
         </div>
@@ -139,6 +157,20 @@
         <button class="deliver-btn">配達済みにする</button>
         <button class="focus-btn secondary">地図で見る</button>
         <button class="delete-btn danger">削除</button>
+      </div>
+    </li>
+  </template>
+
+  <template id="savedRouteItemTemplate">
+    <li class="saved-route-item">
+      <div class="saved-route-main">
+        <strong class="saved-route-title"></strong>
+        <p class="saved-route-meta"></p>
+      </div>
+      <div class="button-row wrap compact">
+        <button class="show-route-btn">地図に表示</button>
+        <button class="export-route-btn secondary">JSON</button>
+        <button class="delete-route-btn danger">削除</button>
       </div>
     </li>
   </template>

@@ -153,7 +153,8 @@ button:hover, .file-label:hover { opacity: 0.92; }
   align-items: center;
   gap: 8px;
 }
-.stop-list {
+.stop-list,
+.saved-route-list {
   list-style: none;
   padding: 0;
   margin: 12px 0 0;
@@ -161,13 +162,19 @@ button:hover, .file-label:hover { opacity: 0.92; }
   flex-direction: column;
   gap: 10px;
 }
-.stop-item {
+.stop-item,
+.saved-route-item,
+.empty-state {
   border: 1px solid var(--line);
   border-radius: 14px;
   padding: 12px;
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+.saved-route-item.selected {
+  border-color: var(--primary);
+  background: var(--primary-soft);
 }
 .stop-title-row {
   display: flex;
@@ -186,7 +193,7 @@ button:hover, .file-label:hover { opacity: 0.92; }
   font-size: 12px;
   font-weight: 700;
 }
-.stop-meta, .stop-note {
+.stop-meta, .stop-note, .saved-route-meta, .empty-state {
   margin: 6px 0 0;
   color: var(--sub);
   font-size: 13px;
