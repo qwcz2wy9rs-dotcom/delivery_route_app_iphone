@@ -1,0 +1,6 @@
+window.APP_CONFIG = {
+  GOOGLE_MAPS_API_KEY: 'AIzaSyD_nZq9WVvQXLkjx9t24btEwPGag-7MxhA',
+  DEFAULT_MAP_TYPE: 'hybrid',
+  DEFAULT_CENTER: { lat: 33.5902, lng: 130.4017 },
+  DEFAULT_ZOOM: 13
+};

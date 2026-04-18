@@ -12,8 +12,6 @@
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icons/apple-touch-icon-180.png" />
   <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png" />
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
-    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
@@ -21,20 +19,22 @@
     <header class="topbar">
       <div>
         <h1>配達ルート記録アプリ</h1>
-        <p>配達先登録・訪問順の記録・移動ルートの保存と再表示</p>
+        <p>Googleの2D航空写真ベースで、配達先・訪問順・移動ルートを記録</p>
       </div>
     </header>
 
     <main class="layout">
       <section class="panel controls">
-        <div class="card notice-card" id="iosGuideCard">
+        <div class="card notice-card">
           <h2>iPhoneで使うときのポイント</h2>
           <ul class="notice-list">
             <li>Safariで開く</li>
             <li>位置情報を「許可」する</li>
-            <li>共有 → 「ホーム画面に追加」でアプリ風に使える</li>
+            <li>共有 → 「ホーム画面に追加」で使いやすくなる</li>
+            <li>Google Maps APIキーは <code>config.js</code> に設定する</li>
           </ul>
           <p id="installStatus" class="status">インストール状態を確認中…</p>
+          <p id="mapProviderStatus" class="status">地図を初期化中…</p>
         </div>
 
         <div class="card">
@@ -65,7 +65,7 @@
           </label>
           <label class="field">
             <span>住所</span>
-            <input id="stopAddress" type="text" placeholder="例: 福岡県飯塚市◯◯ 1-2-3" />
+            <input id="stopAddress" type="text" placeholder="例: 福岡県飯塚市横田65-7" />
           </label>
           <label class="field">
             <span>メモ</span>
@@ -144,6 +144,16 @@
 
       <section class="map-panel">
         <div id="map"></div>
+        <div class="map-overlay top-right">
+          <div class="map-type-toggle">
+            <button id="mapHybridBtn" class="secondary map-type-btn active">航空写真+ラベル</button>
+            <button id="mapSatelliteBtn" class="secondary map-type-btn">航空写真のみ</button>
+            <button id="mapRoadmapBtn" class="secondary map-type-btn">通常地図</button>
+          </div>
+        </div>
+        <div class="map-overlay bottom-left" id="mapHint">
+          Google航空写真ベース
+        </div>
         <div class="mobile-quick-actions">
           <button id="mobileAddCurrentStopBtn">現在地で追加</button>
           <button id="mobileStartTrackBtn" class="secondary">GPS開始</button>
@@ -185,8 +195,7 @@
     </li>
   </template>
 
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
-    integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+  <script src="config.js"></script>
   <script src="https://cdn.geolonia.com/community-geocoder.js"></script>
   <script src="app.js"></script>
 </body>

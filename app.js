@@ -1,4 +1,5 @@
-const STORAGE_KEY = 'delivery-route-app-state-v5';
+const STORAGE_KEY = 'delivery-route-app-state-gmaps-v1';
+const CONFIG = window.APP_CONFIG || {};
 
 const state = {
   routeName: '',
@@ -11,7 +12,8 @@ const state = {
   currentPosition: null,
   savedRoutes: [],
   selectedSavedRouteId: null,
-  addressSearchRunning: false
+  addressSearchRunning: false,
+  mapType: CONFIG.DEFAULT_MAP_TYPE || 'hybrid'
 };
 
 const dom = {
@@ -33,21 +35,27 @@ const dom = {
   savedRoutesList: document.getElementById('savedRoutesList'),
   savedRouteTemplate: document.getElementById('savedRouteItemTemplate'),
   geocodeStatus: document.getElementById('geocodeStatus'),
-  nextStopStatus: document.getElementById('nextStopStatus')
+  nextStopStatus: document.getElementById('nextStopStatus'),
+  mapProviderStatus: document.getElementById('mapProviderStatus'),
+  mapHint: document.getElementById('mapHint'),
+  mapHybridBtn: document.getElementById('mapHybridBtn'),
+  mapSatelliteBtn: document.getElementById('mapSatelliteBtn'),
+  mapRoadmapBtn: document.getElementById('mapRoadmapBtn')
 };
 
 const isStandalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
-const map = L.map('map', { tap: true, zoomControl: true }).setView([33.5902, 130.4017], 13);
-L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-  maxZoom: 19,
-  attribution: '&copy; OpenStreetMap contributors'
-}).addTo(map);
 
-const layers = {
-  stops: L.layerGroup().addTo(map),
-  deliveredRoute: L.polyline([], { weight: 4 }).addTo(map),
-  gpsTrail: L.polyline([], { weight: 3, dashArray: '6 8' }).addTo(map),
-  currentMarker: null
+const mapState = {
+  map: null,
+  ready: false,
+  stopMarkers: [],
+  deliveredPolyline: null,
+  gpsTrailPolyline: null,
+  currentMarker: null,
+  infoWindow: null,
+  previewRouteId: null,
+  googleLoadingPromise: null,
+  clickListener: null
 };
 
 function uid() {
@@ -102,6 +110,7 @@ function applyRouteSnapshot(route) {
   state.gpsTrail = Array.isArray(route.gpsTrail) ? clone(route.gpsTrail) : [];
   state.distanceMeters = Number(route.distanceMeters || 0);
   dom.routeName.value = state.routeName;
+  mapState.previewRouteId = null;
   setGeocodeStatus('');
   setNextStopStatus('未配達の先頭順で案内できます');
 }
@@ -113,7 +122,8 @@ function workspacePayload() {
     gpsTrail: state.gpsTrail,
     distanceMeters: state.distanceMeters,
     savedRoutes: state.savedRoutes,
-    selectedSavedRouteId: state.selectedSavedRouteId
+    selectedSavedRouteId: state.selectedSavedRouteId,
+    mapType: state.mapType
   };
 }
 
@@ -126,13 +136,13 @@ function load() {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return;
     const parsed = JSON.parse(raw);
-
     state.routeName = parsed.routeName || '';
     state.stops = Array.isArray(parsed.stops) ? parsed.stops : [];
     state.gpsTrail = Array.isArray(parsed.gpsTrail) ? parsed.gpsTrail : [];
     state.distanceMeters = Number(parsed.distanceMeters || 0);
     state.savedRoutes = Array.isArray(parsed.savedRoutes) ? parsed.savedRoutes : [];
     state.selectedSavedRouteId = parsed.selectedSavedRouteId || null;
+    state.mapType = parsed.mapType || state.mapType;
     dom.routeName.value = state.routeName;
   } catch (error) {
     console.error('load failed', error);
@@ -143,6 +153,49 @@ function nextDeliveryOrder() {
   return deliveredCountFromStops(state.stops) + 1;
 }
 
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}
+
+function setMapProviderStatus(text) {
+  if (dom.mapProviderStatus) {
+    dom.mapProviderStatus.textContent = text;
+  }
+}
+
+function setMapHint(text) {
+  if (dom.mapHint) dom.mapHint.textContent = text;
+}
+
+function setGeocodeStatus(text) {
+  if (dom.geocodeStatus) dom.geocodeStatus.textContent = text;
+}
+
+function setNextStopStatus(text) {
+  if (dom.nextStopStatus) dom.nextStopStatus.textContent = text;
+}
+
+function setGpsStatus(text) {
+  dom.gpsStatus.textContent = text;
+}
+
+function setInstallStatus() {
+  if (isStandalone) {
+    dom.installStatus.textContent = 'ホーム画面から起動中です';
+    return;
+  }
+  if (/iPhone|iPad|iPod/i.test(navigator.userAgent)) {
+    dom.installStatus.textContent = 'Safariの共有ボタンから「ホーム画面に追加」で使いやすくなります';
+    return;
+  }
+  dom.installStatus.textContent = 'ブラウザで使用中です';
+}
+
 function refreshSummary() {
   const deliveredCount = deliveredCountFromStops(state.stops);
   dom.stopCount.textContent = `${state.stops.length}件`;
@@ -150,6 +203,14 @@ function refreshSummary() {
   dom.trackPointCount.textContent = `${state.gpsTrail.length}点`;
   dom.distanceText.textContent = formatDistance(state.distanceMeters);
   dom.savedRouteCount.textContent = `${state.savedRoutes.length}件`;
+
+  if (mapState.previewRouteId) {
+    const preview = state.savedRoutes.find(route => route.id === mapState.previewRouteId);
+    if (preview) {
+      dom.currentRouteStatus.textContent = `地図プレビュー中: 保存済み「${preview.routeName || '名称未設定'}」 / 作業中ルートは未変更`;
+      return;
+    }
+  }
 
   if (state.selectedSavedRouteId) {
     const selected = state.savedRoutes.find(route => route.id === state.selectedSavedRouteId);
@@ -161,96 +222,65 @@ function refreshSummary() {
   dom.currentRouteStatus.textContent = '現在表示中: 未保存の作業ルート';
 }
 
-
-function makeStopIcon(label, delivered) {
-  return L.divIcon({
-    className: 'custom-stop-icon',
-    html: `<div class="numbered-stop${delivered ? '' : ' pending'}">${escapeHtml(label)}</div>`,
-    iconSize: [32, 32],
-    iconAnchor: [16, 16],
-    popupAnchor: [0, -16]
-  });
+function createStopIcon(label, delivered) {
+  const fill = delivered ? '#2057d4' : '#ffffff';
+  const stroke = delivered ? '#2057d4' : '#5d6b82';
+  const textColor = delivered ? '#ffffff' : '#1c2430';
+  const fontSize = String(label).length > 1 ? 14 : 18;
+  const svg = `
+    <svg xmlns="http://www.w3.org/2000/svg" width="44" height="44" viewBox="0 0 44 44">
+      <circle cx="22" cy="22" r="17" fill="${fill}" stroke="${stroke}" stroke-width="4" />
+      <text x="22" y="27" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif" font-weight="700" font-size="${fontSize}" fill="${textColor}">${escapeHtml(String(label))}</text>
+    </svg>`;
+  return {
+    url: `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`,
+    scaledSize: new google.maps.Size(44, 44),
+    anchor: new google.maps.Point(22, 22)
+  };
 }
 
-function setGeocodeStatus(text) {
-  if (dom.geocodeStatus) dom.geocodeStatus.textContent = text;
+function createCurrentPositionIcon() {
+  const svg = `
+    <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 28 28">
+      <circle cx="14" cy="14" r="9" fill="#28b7ff" stroke="#ffffff" stroke-width="4" />
+    </svg>`;
+  return {
+    url: `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`,
+    scaledSize: new google.maps.Size(28, 28),
+    anchor: new google.maps.Point(14, 14)
+  };
 }
 
-function setNextStopStatus(text) {
-  if (dom.nextStopStatus) dom.nextStopStatus.textContent = text;
-}
-
-function makeCurrentIcon() {
-  return L.divIcon({
-    className: 'custom-current-icon',
-    html: '<div class="current-marker-dot"></div>',
-    iconSize: [18, 18],
-    iconAnchor: [9, 9]
-  });
-}
-
-function deliveredStopsInOrder() {
+function pendingStopsInOrder() {
   return [...state.stops]
+    .filter(stop => stop.deliveredOrder === null)
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+}
+
+function deliveredStopsInOrder(stops = state.stops) {
+  return [...stops]
     .filter(stop => stop.deliveredOrder !== null)
     .sort((a, b) => a.deliveredOrder - b.deliveredOrder);
 }
 
-function renderMap() {
-  layers.stops.clearLayers();
-
-  state.stops.forEach(stop => {
-    const label = stop.deliveredOrder !== null ? stop.deliveredOrder : '未';
-    const marker = L.marker([stop.lat, stop.lng], {
-      icon: makeStopIcon(label, stop.deliveredOrder !== null)
-    });
-    const popup = `
-      <strong>${escapeHtml(stop.name || '名称未設定')}</strong><br>
-      状態: ${stop.deliveredOrder !== null ? `配達順 ${stop.deliveredOrder}` : '未配達'}<br>
-      座標: ${toFixedCoord(stop.lat)}, ${toFixedCoord(stop.lng)}<br>
-      ${stop.address ? `住所: ${escapeHtml(stop.address)}<br>` : ''}
-      ${stop.note ? `メモ: ${escapeHtml(stop.note)}<br>` : ''}
-      ${stop.deliveredAt ? `記録時刻: ${escapeHtml(formatDateTime(stop.deliveredAt))}` : ''}
-    `;
-    marker.bindPopup(popup);
-    marker.addTo(layers.stops);
+function updateMapTypeButtons() {
+  const btns = [
+    [dom.mapHybridBtn, 'hybrid'],
+    [dom.mapSatelliteBtn, 'satellite'],
+    [dom.mapRoadmapBtn, 'roadmap']
+  ];
+  btns.forEach(([btn, type]) => {
+    if (!btn) return;
+    btn.classList.toggle('active', state.mapType === type);
   });
 
-  const deliveredRoute = deliveredStopsInOrder().map(stop => [stop.lat, stop.lng]);
-  layers.deliveredRoute.setLatLngs(deliveredRoute);
-  layers.gpsTrail.setLatLngs(state.gpsTrail.map(point => [point.lat, point.lng]));
-
-  if (state.currentPosition) {
-    if (!layers.currentMarker) {
-      layers.currentMarker = L.marker([state.currentPosition.lat, state.currentPosition.lng], {
-        icon: makeCurrentIcon()
-      }).addTo(map);
-    } else {
-      layers.currentMarker.setLatLng([state.currentPosition.lat, state.currentPosition.lng]);
-    }
+  if (state.mapType === 'hybrid') {
+    setMapHint('Google航空写真 + ラベル');
+  } else if (state.mapType === 'satellite') {
+    setMapHint('Google航空写真のみ');
+  } else {
+    setMapHint('Google通常地図');
   }
-
-  setTimeout(() => map.invalidateSize(), 0);
-}
-
-function zoomToCurrentRoute() {
-  const points = [
-    ...state.stops.map(stop => [stop.lat, stop.lng]),
-    ...state.gpsTrail.map(point => [point.lat, point.lng])
-  ];
-
-  if (points.length === 0) {
-    if (state.currentPosition) {
-      map.setView([state.currentPosition.lat, state.currentPosition.lng], 17);
-    }
-    return;
-  }
-
-  if (points.length === 1) {
-    map.setView(points[0], 18);
-    return;
-  }
-
-  map.fitBounds(L.latLngBounds(points), { padding: [30, 30] });
 }
 
 function renderList() {
@@ -272,9 +302,9 @@ function renderList() {
     node.querySelector('.deliver-btn').textContent = stop.deliveredOrder !== null ? '未配達に戻す' : '配達済みにする';
     node.querySelector('.deliver-btn').addEventListener('click', () => toggleDelivered(stop.id));
     node.querySelector('.focus-btn').addEventListener('click', () => {
-      map.setView([stop.lat, stop.lng], 18);
+      focusLatLng(stop.lat, stop.lng, 19);
       const marker = findMarkerByLatLng(stop.lat, stop.lng);
-      if (marker) marker.openPopup();
+      if (marker) openStopInfo(marker);
       window.scrollTo({ top: 0, behavior: 'smooth' });
     });
     node.querySelector('.delete-btn').addEventListener('click', () => removeStop(stop.id));
@@ -298,7 +328,7 @@ function renderSavedRoutes() {
 
   sorted.forEach(route => {
     const node = dom.savedRouteTemplate.content.firstElementChild.cloneNode(true);
-    node.classList.toggle('selected', route.id === state.selectedSavedRouteId);
+    node.classList.toggle('selected', route.id === state.selectedSavedRouteId || route.id === mapState.previewRouteId);
     node.querySelector('.saved-route-title').textContent = route.routeName || '名称未設定';
     node.querySelector('.saved-route-meta').textContent = `保存 ${formatDateTime(route.savedAt)} / 配達先 ${route.stops.length}件 / 配達済み ${deliveredCountFromStops(route.stops)}件 / GPS ${route.gpsTrail.length}点 / ${formatDistance(route.distanceMeters)}`;
 
@@ -319,21 +349,153 @@ function renderSavedRoutes() {
 
 function renderAll() {
   refreshSummary();
-  renderMap();
+  renderWorkspaceRouteOnMap();
   renderList();
+  renderSavedRoutes();
+  updateMapTypeButtons();
+  persist();
+}
+
+function popupHtmlForStop(stop) {
+  return `
+    <div style="line-height:1.6;min-width:180px;">
+      <strong>${escapeHtml(stop.name || '名称未設定')}</strong><br>
+      状態: ${stop.deliveredOrder !== null ? `配達順 ${stop.deliveredOrder}` : '未配達'}<br>
+      座標: ${toFixedCoord(stop.lat)}, ${toFixedCoord(stop.lng)}<br>
+      ${stop.address ? `住所: ${escapeHtml(stop.address)}<br>` : ''}
+      ${stop.note ? `メモ: ${escapeHtml(stop.note)}<br>` : ''}
+      ${stop.deliveredAt ? `記録時刻: ${escapeHtml(formatDateTime(stop.deliveredAt))}` : ''}
+    </div>`;
+}
+
+function clearMapObjects() {
+  if (!mapState.ready) return;
+  mapState.stopMarkers.forEach(marker => marker.setMap(null));
+  mapState.stopMarkers = [];
+
+  if (mapState.deliveredPolyline) mapState.deliveredPolyline.setMap(null);
+  if (mapState.gpsTrailPolyline) mapState.gpsTrailPolyline.setMap(null);
+  if (mapState.currentMarker) mapState.currentMarker.setMap(null);
+
+  mapState.deliveredPolyline = null;
+  mapState.gpsTrailPolyline = null;
+  mapState.currentMarker = null;
+}
+
+function openStopInfo(marker) {
+  if (!mapState.ready || !marker) return;
+  if (!mapState.infoWindow) {
+    mapState.infoWindow = new google.maps.InfoWindow();
+  }
+  mapState.infoWindow.setContent(marker.__popupHtml || '');
+  mapState.infoWindow.open({ map: mapState.map, anchor: marker });
+}
+
+function drawRouteOnMap(route, options = {}) {
+  if (!mapState.ready) return;
+  const showCurrentPosition = options.showCurrentPosition !== false;
+
+  clearMapObjects();
+
+  route.stops.forEach(stop => {
+    const label = stop.deliveredOrder !== null ? stop.deliveredOrder : '未';
+    const marker = new google.maps.Marker({
+      position: { lat: stop.lat, lng: stop.lng },
+      map: mapState.map,
+      title: stop.name || '配達先',
+      icon: createStopIcon(label, stop.deliveredOrder !== null),
+      zIndex: stop.deliveredOrder !== null ? 20 : 10
+    });
+    marker.__popupHtml = popupHtmlForStop(stop);
+    marker.__stopLat = stop.lat;
+    marker.__stopLng = stop.lng;
+    marker.addListener('click', () => openStopInfo(marker));
+    mapState.stopMarkers.push(marker);
+  });
+
+  const deliveredPath = deliveredStopsInOrder(route.stops).map(stop => ({ lat: stop.lat, lng: stop.lng }));
+  mapState.deliveredPolyline = new google.maps.Polyline({
+    map: mapState.map,
+    path: deliveredPath,
+    strokeColor: '#1d4ed8',
+    strokeOpacity: 0.95,
+    strokeWeight: 5
+  });
+
+  const gpsPath = (route.gpsTrail || []).map(point => ({ lat: point.lat, lng: point.lng }));
+  mapState.gpsTrailPolyline = new google.maps.Polyline({
+    map: mapState.map,
+    path: gpsPath,
+    strokeColor: '#67e8f9',
+    strokeOpacity: 0.95,
+    strokeWeight: 4
+  });
+
+  if (showCurrentPosition && state.currentPosition) {
+    mapState.currentMarker = new google.maps.Marker({
+      position: { lat: state.currentPosition.lat, lng: state.currentPosition.lng },
+      map: mapState.map,
+      title: '現在地',
+      icon: createCurrentPositionIcon(),
+      zIndex: 100
+    });
+  }
+}
+
+function renderWorkspaceRouteOnMap() {
+  if (mapState.previewRouteId) return;
+  drawRouteOnMap(snapshotCurrentRoute(), { showCurrentPosition: true });
+}
+
+function previewSavedRoute(routeId) {
+  const route = state.savedRoutes.find(item => item.id === routeId);
+  if (!route) return;
+  mapState.previewRouteId = route.id;
+  drawRouteOnMap(route, { showCurrentPosition: false });
+  zoomToPoints([
+    ...(route.stops || []).map(stop => ({ lat: stop.lat, lng: stop.lng })),
+    ...(route.gpsTrail || []).map(point => ({ lat: point.lat, lng: point.lng }))
+  ]);
+  refreshSummary();
   renderSavedRoutes();
   persist();
 }
 
 function findMarkerByLatLng(lat, lng) {
-  let found = null;
-  layers.stops.eachLayer(layer => {
-    const ll = layer.getLatLng?.();
-    if (ll && Math.abs(ll.lat - lat) < 0.000001 && Math.abs(ll.lng - lng) < 0.000001) {
-      found = layer;
+  return mapState.stopMarkers.find(marker => {
+    const pos = marker.getPosition();
+    return pos && Math.abs(pos.lat() - lat) < 0.000001 && Math.abs(pos.lng() - lng) < 0.000001;
+  }) || null;
+}
+
+function focusLatLng(lat, lng, zoom = 18) {
+  if (!mapState.ready) return;
+  mapState.map.setCenter({ lat, lng });
+  if (zoom) mapState.map.setZoom(zoom);
+}
+
+function zoomToPoints(points) {
+  if (!mapState.ready) return;
+  if (!points || points.length === 0) {
+    if (state.currentPosition) {
+      focusLatLng(state.currentPosition.lat, state.currentPosition.lng, 18);
     }
-  });
-  return found;
+    return;
+  }
+  if (points.length === 1) {
+    focusLatLng(points[0].lat, points[0].lng, 19);
+    return;
+  }
+  const bounds = new google.maps.LatLngBounds();
+  points.forEach(point => bounds.extend(point));
+  mapState.map.fitBounds(bounds, 48);
+}
+
+function zoomToCurrentRoute() {
+  zoomToPoints([
+    ...state.stops.map(stop => ({ lat: stop.lat, lng: stop.lng })),
+    ...state.gpsTrail.map(point => ({ lat: point.lat, lng: point.lng }))
+  ]);
 }
 
 function addStop(lat, lng, name, note, address = '') {
@@ -352,6 +514,7 @@ function addStop(lat, lng, name, note, address = '') {
   dom.stopNote.value = '';
   if (dom.stopAddress) dom.stopAddress.value = '';
   setGeocodeStatus('');
+  mapState.previewRouteId = null;
   renderAll();
 }
 
@@ -428,9 +591,7 @@ async function geocodeAddress(address) {
     }
   }
 
-  if (lastError) {
-    throw lastError;
-  }
+  if (lastError) throw lastError;
   throw new Error('該当する住所が見つかりませんでした。郵便番号を外すか、丁目・番地を半角で入力してみてください');
 }
 
@@ -488,9 +649,9 @@ async function addStopFromAddress() {
     }
 
     addStop(lat, lng, dom.stopName.value.trim(), dom.stopNote.value.trim(), address);
-    map.setView([lat, lng], 18);
+    focusLatLng(lat, lng, 19);
     const marker = findMarkerByLatLng(lat, lng);
-    if (marker) marker.openPopup();
+    if (marker) openStopInfo(marker);
     const providerLabel = geocoded.provider === 'geolonia' ? 'Geolonia' : 'OpenStreetMap';
     const normalized = geocoded.usedQuery && geocoded.usedQuery !== address ? `（検索語: ${geocoded.usedQuery}）` : '';
     setGeocodeStatus(`住所から追加しました: ${address} / ${providerLabel}${normalized}`);
@@ -500,12 +661,6 @@ async function addStopFromAddress() {
   } finally {
     state.addressSearchRunning = false;
   }
-}
-
-function pendingStopsInOrder() {
-  return [...state.stops]
-    .filter(stop => stop.deliveredOrder === null)
-    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 }
 
 function openDirectionsToStop(stop) {
@@ -526,9 +681,11 @@ function guideToNextUndelivered() {
     return;
   }
 
-  map.setView([nextStop.lat, nextStop.lng], 18);
+  mapState.previewRouteId = null;
+  renderWorkspaceRouteOnMap();
+  focusLatLng(nextStop.lat, nextStop.lng, 19);
   const marker = findMarkerByLatLng(nextStop.lat, nextStop.lng);
-  if (marker) marker.openPopup();
+  if (marker) openStopInfo(marker);
   setNextStopStatus(`次の未配達: ${nextStop.name || '名称未設定'}${nextStop.address ? ` / ${nextStop.address}` : ''}`);
   openDirectionsToStop(nextStop);
 }
@@ -545,6 +702,7 @@ function removeStop(id) {
       }
     });
   }
+  mapState.previewRouteId = null;
   renderAll();
 }
 
@@ -565,21 +723,27 @@ function toggleDelivered(id) {
       }
     });
   }
+
+  mapState.previewRouteId = null;
   renderAll();
 }
 
 function undoLatestDelivered() {
-  const latest = deliveredStopsInOrder().at(-1);
-  if (!latest) return;
+  const latest = deliveredStopsInOrder().slice(-1)[0];
+  if (!latest) {
+    alert('取り消せる配達済みがありません');
+    return;
+  }
   toggleDelivered(latest.id);
 }
 
 function resetDeliveryOrder() {
+  if (!confirm('現在の配達順をすべて未配達に戻しますか？')) return;
   state.stops.forEach(stop => {
     stop.deliveredOrder = null;
     stop.deliveredAt = null;
   });
-  setNextStopStatus('未配達の先頭順で案内できます');
+  mapState.previewRouteId = null;
   renderAll();
 }
 
@@ -589,8 +753,8 @@ function clearWorkspace() {
   state.gpsTrail = [];
   state.distanceMeters = 0;
   state.selectedSavedRouteId = null;
+  mapState.previewRouteId = null;
   dom.routeName.value = '';
-  if (dom.stopAddress) dom.stopAddress.value = '';
   setGeocodeStatus('');
   setNextStopStatus('未配達の先頭順で案内できます');
   renderAll();
@@ -599,22 +763,6 @@ function clearWorkspace() {
 function clearAll() {
   if (!confirm('作業中ルートを空にします。保存済みルート一覧は残ります。よろしいですか？')) return;
   clearWorkspace();
-}
-
-function setGpsStatus(text) {
-  dom.gpsStatus.textContent = text;
-}
-
-function setInstallStatus() {
-  if (isStandalone) {
-    dom.installStatus.textContent = 'ホーム画面から起動中です';
-    return;
-  }
-  if (/iPhone|iPad|iPod/i.test(navigator.userAgent)) {
-    dom.installStatus.textContent = 'Safariの共有ボタンから「ホーム画面に追加」で使いやすくなります';
-    return;
-  }
-  dom.installStatus.textContent = 'ブラウザで使用中です';
 }
 
 function addTrailPoint(lat, lng) {
@@ -631,12 +779,19 @@ function addTrailPoint(lat, lng) {
 function handlePosition(position) {
   const { latitude, longitude, accuracy } = position.coords;
   state.currentPosition = { lat: latitude, lng: longitude, accuracy };
-
   if (state.tracking) {
     addTrailPoint(latitude, longitude);
   }
 
   setGpsStatus(`GPS: ${state.tracking ? '記録中' : '取得済み'} / 精度 約${Math.round(accuracy)}m / ${formatDateTime(new Date().toISOString())}`);
+  if (mapState.previewRouteId) {
+    renderSavedRoutes();
+    persist();
+    if (mapState.currentMarker) {
+      mapState.currentMarker.setPosition({ lat: latitude, lng: longitude });
+    }
+    return;
+  }
   renderAll();
 }
 
@@ -703,7 +858,7 @@ async function addStopFromCurrentLocation() {
     const { latitude, longitude } = pos.coords;
     state.currentPosition = { lat: latitude, lng: longitude, accuracy: pos.coords.accuracy };
     addStop(latitude, longitude, dom.stopName.value.trim(), dom.stopNote.value.trim());
-    map.setView([latitude, longitude], 18);
+    focusLatLng(latitude, longitude, 19);
   } catch (error) {
     setGpsStatus(`現在地取得失敗: ${error.message}`);
   }
@@ -714,31 +869,20 @@ function toggleMapPickMode() {
   dom.pickModeStatus.textContent = `地図タップ追加: ${state.mapPickMode ? 'ON' : 'OFF'}`;
 }
 
-map.on('click', (event) => {
-  if (!state.mapPickMode) return;
-  addStop(event.latlng.lat, event.latlng.lng, dom.stopName.value.trim(), dom.stopNote.value.trim());
-});
-
 function centerToCurrentPosition() {
   if (state.currentPosition) {
-    map.setView([state.currentPosition.lat, state.currentPosition.lng], 18);
+    mapState.previewRouteId = null;
+    renderWorkspaceRouteOnMap();
+    focusLatLng(state.currentPosition.lat, state.currentPosition.lng, 19);
     return;
   }
   getCurrentPositionOnce()
     .then(pos => {
+      mapState.previewRouteId = null;
       handlePosition(pos);
-      map.setView([pos.coords.latitude, pos.coords.longitude], 18);
+      focusLatLng(pos.coords.latitude, pos.coords.longitude, 19);
     })
     .catch(handleGpsError);
-}
-
-function escapeHtml(value) {
-  return String(value)
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&#39;');
 }
 
 function routeFileName(routeName) {
@@ -751,11 +895,7 @@ async function shareOrDownloadJson(jsonText, filename, shareTitle, shareText) {
 
   if (navigator.canShare && navigator.canShare({ files: [file] })) {
     try {
-      await navigator.share({
-        files: [file],
-        title: shareTitle,
-        text: shareText
-      });
+      await navigator.share({ files: [file], title: shareTitle, text: shareText });
       return true;
     } catch (error) {
       if (error.name !== 'AbortError') {
@@ -893,51 +1033,9 @@ function saveCurrentRoute() {
   }
 
   state.selectedSavedRouteId = snapshot.id;
+  mapState.previewRouteId = null;
   renderAll();
   alert('保存済みルート一覧に保存しました');
-}
-
-
-function previewSavedRoute(routeId) {
-  const route = state.savedRoutes.find(item => item.id === routeId);
-  if (!route) return;
-
-  layers.stops.clearLayers();
-  route.stops.forEach(stop => {
-    const label = stop.deliveredOrder !== null ? stop.deliveredOrder : '未';
-    const marker = L.marker([stop.lat, stop.lng], {
-      icon: makeStopIcon(label, stop.deliveredOrder !== null)
-    });
-    const popup = `
-      <strong>${escapeHtml(stop.name || '名称未設定')}</strong><br>
-      状態: ${stop.deliveredOrder !== null ? `配達順 ${stop.deliveredOrder}` : '未配達'}<br>
-      座標: ${toFixedCoord(stop.lat)}, ${toFixedCoord(stop.lng)}<br>
-      ${stop.address ? `住所: ${escapeHtml(stop.address)}<br>` : ''}
-      ${stop.note ? `メモ: ${escapeHtml(stop.note)}<br>` : ''}
-      ${stop.deliveredAt ? `記録時刻: ${escapeHtml(formatDateTime(stop.deliveredAt))}` : ''}
-    `;
-    marker.bindPopup(popup);
-    marker.addTo(layers.stops);
-  });
-
-  const deliveredRoute = [...route.stops]
-    .filter(stop => stop.deliveredOrder !== null)
-    .sort((a, b) => a.deliveredOrder - b.deliveredOrder)
-    .map(stop => [stop.lat, stop.lng]);
-  layers.deliveredRoute.setLatLngs(deliveredRoute);
-  layers.gpsTrail.setLatLngs((route.gpsTrail || []).map(point => [point.lat, point.lng]));
-
-  const points = [
-    ...(route.stops || []).map(stop => [stop.lat, stop.lng]),
-    ...(route.gpsTrail || []).map(point => [point.lat, point.lng])
-  ];
-  if (points.length > 0) {
-    map.fitBounds(L.latLngBounds(points), { padding: [30, 30] });
-  }
-  state.selectedSavedRouteId = route.id;
-  refreshSummary();
-  renderSavedRoutes();
-  persist();
 }
 
 function loadSelectedRoute() {
@@ -966,12 +1064,88 @@ function deleteSavedRoute(routeId) {
   if (state.selectedSavedRouteId === routeId) {
     state.selectedSavedRouteId = null;
   }
+  if (mapState.previewRouteId === routeId) {
+    mapState.previewRouteId = null;
+  }
   renderAll();
 }
 
 function newRouteWorkspace() {
   if (!confirm('現在の作業ルートを新規状態にします。保存していない変更は失われます。よろしいですか？')) return;
   clearWorkspace();
+}
+
+function setMapType(type) {
+  state.mapType = type;
+  if (mapState.ready) {
+    mapState.map.setMapTypeId(type);
+    mapState.map.setTilt(0);
+  }
+  updateMapTypeButtons();
+  persist();
+}
+
+function loadGoogleMapsApi() {
+  const apiKey = CONFIG.GOOGLE_MAPS_API_KEY || '';
+  if (!apiKey) {
+    return Promise.reject(new Error('config.js に Google Maps APIキーを設定してください'));
+  }
+  if (window.google?.maps) return Promise.resolve(window.google.maps);
+  if (mapState.googleLoadingPromise) return mapState.googleLoadingPromise;
+
+  mapState.googleLoadingPromise = new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(apiKey)}&v=weekly&loading=async`;
+    script.async = true;
+    script.defer = true;
+    script.onload = () => resolve(window.google.maps);
+    script.onerror = () => reject(new Error('Google Maps APIの読み込みに失敗しました'));
+    document.head.appendChild(script);
+  });
+
+  return mapState.googleLoadingPromise;
+}
+
+window.gm_authFailure = function gmAuthFailure() {
+  setMapProviderStatus('Google Maps APIキーが無効か、HTTPリファラ制限に引っかかっています');
+};
+
+async function initMap() {
+  try {
+    setMapProviderStatus('Google Maps を読み込み中…');
+    await loadGoogleMapsApi();
+
+    const center = CONFIG.DEFAULT_CENTER || { lat: 33.5902, lng: 130.4017 };
+    mapState.map = new google.maps.Map(document.getElementById('map'), {
+      center,
+      zoom: CONFIG.DEFAULT_ZOOM || 13,
+      mapTypeId: state.mapType,
+      streetViewControl: false,
+      fullscreenControl: false,
+      mapTypeControl: false,
+      rotateControl: false,
+      gestureHandling: 'greedy',
+      tilt: 0,
+      clickableIcons: true,
+      keyboardShortcuts: true
+    });
+
+    mapState.ready = true;
+    mapState.infoWindow = new google.maps.InfoWindow();
+    mapState.clickListener = mapState.map.addListener('click', (event) => {
+      if (!state.mapPickMode) return;
+      addStop(event.latLng.lat(), event.latLng.lng(), dom.stopName.value.trim(), dom.stopNote.value.trim(), dom.stopAddress.value.trim());
+      focusLatLng(event.latLng.lat(), event.latLng.lng(), 19);
+    });
+
+    updateMapTypeButtons();
+    setMapProviderStatus('Google Maps: 2D航空写真を使用中');
+    renderAll();
+  } catch (error) {
+    console.error(error);
+    setMapProviderStatus(error.message || '地図の初期化に失敗しました');
+    setMapHint('Google Maps APIキーを設定すると航空写真表示になります');
+  }
 }
 
 function bindEvents() {
@@ -999,6 +1173,7 @@ function bindEvents() {
   document.getElementById('exportLibraryBtn').addEventListener('click', exportLibraryJson);
   document.getElementById('clearAllBtn').addEventListener('click', clearAll);
   document.getElementById('loadSelectedRouteBtn').addEventListener('click', loadSelectedRoute);
+  document.getElementById('guideNextStopBtn').addEventListener('click', guideToNextUndelivered);
   document.getElementById('importInput').addEventListener('change', (e) => {
     const file = e.target.files?.[0];
     if (file) importJson(file);
@@ -1006,7 +1181,6 @@ function bindEvents() {
   });
 
   document.getElementById('mobileAddCurrentStopBtn').addEventListener('click', addStopFromCurrentLocation);
-  document.getElementById('guideNextStopBtn').addEventListener('click', guideToNextUndelivered);
   document.getElementById('mobileStartTrackBtn').addEventListener('click', () => {
     if (state.tracking) {
       stopTracking();
@@ -1015,11 +1189,14 @@ function bindEvents() {
     startTracking();
   });
 
+  dom.mapHybridBtn.addEventListener('click', () => setMapType('hybrid'));
+  dom.mapSatelliteBtn.addEventListener('click', () => setMapType('satellite'));
+  dom.mapRoadmapBtn.addEventListener('click', () => setMapType('roadmap'));
+
   window.addEventListener('beforeunload', persist);
-  window.addEventListener('resize', () => map.invalidateSize());
-  document.addEventListener('visibilitychange', () => {
-    if (!document.hidden) {
-      setTimeout(() => map.invalidateSize(), 100);
+  window.addEventListener('resize', () => {
+    if (mapState.ready) {
+      google.maps.event.trigger(mapState.map, 'resize');
     }
   });
 }
@@ -1039,11 +1216,15 @@ async function init() {
   bindEvents();
   setInstallStatus();
   syncTrackButtons();
-  renderAll();
+  refreshSummary();
+  renderList();
+  renderSavedRoutes();
+  updateMapTypeButtons();
   setGpsStatus('GPS: 「現在地へ移動」または「GPS記録開始」を押してください');
   setGeocodeStatus('');
   setNextStopStatus('未配達の先頭順で案内できます');
   await disableOldServiceWorkers();
+  await initMap();
 }
 
 init();
