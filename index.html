@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>配達ルート記録アプリ</title>
+  <meta name="theme-color" content="#2057d4" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <meta name="apple-mobile-web-app-title" content="配達ルート" />
+  <meta name="format-detection" content="telephone=no" />
+  <link rel="manifest" href="manifest.json" />
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon-180.png" />
+  <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div>
+        <h1>配達ルート記録アプリ</h1>
+        <p>配達先登録・訪問順の記録・移動ルートの見返し</p>
+      </div>
+    </header>
+
+    <main class="layout">
+      <section class="panel controls">
+        <div class="card notice-card" id="iosGuideCard">
+          <h2>iPhoneで使うときのポイント</h2>
+          <ul class="notice-list">
+            <li>Safariで開く</li>
+            <li>位置情報を「許可」する</li>
+            <li>共有 → 「ホーム画面に追加」でアプリ風に使える</li>
+          </ul>
+          <p id="installStatus" class="status">インストール状態を確認中…</p>
+        </div>
+
+        <div class="card">
+          <h2>ルート情報</h2>
+          <label class="field">
+            <span>ルート名</span>
+            <input id="routeName" type="text" placeholder="例: 朝刊Aコース" />
+          </label>
+          <div class="button-row wrap">
+            <button id="startTrackBtn">GPS記録開始</button>
+            <button id="stopTrackBtn" class="secondary">GPS記録停止</button>
+            <button id="centerBtn" class="secondary">現在地へ移動</button>
+          </div>
+          <p id="gpsStatus" class="status">GPS: 未開始</p>
+        </div>
+
+        <div class="card">
+          <h2>配達先の追加</h2>
+          <label class="field">
+            <span>配達先名</span>
+            <input id="stopName" type="text" placeholder="例: 田中様宅" />
+          </label>
+          <label class="field">
+            <span>メモ</span>
+            <input id="stopNote" type="text" placeholder="例: 玄関横ポスト / 階段あり" />
+          </label>
+          <div class="button-row wrap">
+            <button id="addCurrentStopBtn">現在地で追加</button>
+            <button id="mapPickModeBtn" class="secondary">地図タップで追加</button>
+          </div>
+          <p id="pickModeStatus" class="status">地図タップ追加: OFF</p>
+        </div>
+
+        <div class="card">
+          <h2>訪問管理</h2>
+          <div class="button-row wrap">
+            <button id="undoDeliveryBtn" class="secondary">直前の配達を取り消す</button>
+            <button id="resetDeliveryOrderBtn" class="danger">配達順をリセット</button>
+          </div>
+          <div class="button-row wrap">
+            <button id="saveBtn">端末に保存</button>
+            <button id="exportBtn" class="secondary">JSON書き出し</button>
+            <label class="file-label secondary">
+              JSON読み込み
+              <input id="importInput" type="file" accept="application/json" />
+            </label>
+          </div>
+        </div>
+
+        <div class="card summary-card">
+          <h2>サマリー</h2>
+          <dl class="summary-grid">
+            <div>
+              <dt>配達先</dt>
+              <dd id="stopCount">0件</dd>
+            </div>
+            <div>
+              <dt>配達済み</dt>
+              <dd id="deliveredCount">0件</dd>
+            </div>
+            <div>
+              <dt>GPS点数</dt>
+              <dd id="trackPointCount">0点</dd>
+            </div>
+            <div>
+              <dt>移動距離</dt>
+              <dd id="distanceText">0 m</dd>
+            </div>
+          </dl>
+        </div>
+
+        <div class="card list-card">
+          <div class="list-header">
+            <h2>配達先一覧</h2>
+            <button id="clearAllBtn" class="danger">全消去</button>
+          </div>
+          <ul id="stopList" class="stop-list"></ul>
+        </div>
+      </section>
+
+      <section class="map-panel">
+        <div id="map"></div>
+        <div class="mobile-quick-actions">
+          <button id="mobileAddCurrentStopBtn">現在地で追加</button>
+          <button id="mobileStartTrackBtn" class="secondary">GPS開始</button>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <template id="stopItemTemplate">
+    <li class="stop-item">
+      <div class="stop-item-main">
+        <div class="stop-title-row">
+          <span class="stop-order-badge">未</span>
+          <strong class="stop-title"></strong>
+        </div>
+        <p class="stop-meta"></p>
+        <p class="stop-note"></p>
+      </div>
+      <div class="button-row wrap compact">
+        <button class="deliver-btn">配達済みにする</button>
+        <button class="focus-btn secondary">地図で見る</button>
+        <button class="delete-btn danger">削除</button>
+      </div>
+    </li>
+  </template>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+    integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+  <script src="app.js"></script>
+</body>
+</html>
