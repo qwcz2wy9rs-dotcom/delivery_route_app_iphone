@@ -155,6 +155,26 @@ function refreshSummary() {
   dom.currentRouteStatus.textContent = '現在表示中: 未保存の作業ルート';
 }
 
+
+function makeStopIcon(label, delivered) {
+  return L.divIcon({
+    className: 'custom-stop-icon',
+    html: `<div class="numbered-stop${delivered ? '' : ' pending'}">${escapeHtml(label)}</div>`,
+    iconSize: [32, 32],
+    iconAnchor: [16, 16],
+    popupAnchor: [0, -16]
+  });
+}
+
+function makeCurrentIcon() {
+  return L.divIcon({
+    className: 'custom-current-icon',
+    html: '<div class="current-marker-dot"></div>',
+    iconSize: [18, 18],
+    iconAnchor: [9, 9]
+  });
+}
+
 function deliveredStopsInOrder() {
   return [...state.stops]
     .filter(stop => stop.deliveredOrder !== null)
