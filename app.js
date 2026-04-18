@@ -1090,16 +1090,39 @@ function loadGoogleMapsApi() {
   if (!apiKey) {
     return Promise.reject(new Error('config.js に Google Maps APIキーを設定してください'));
   }
-  if (window.google?.maps) return Promise.resolve(window.google.maps);
+  if (window.google?.maps?.Map) return Promise.resolve(window.google.maps);
   if (mapState.googleLoadingPromise) return mapState.googleLoadingPromise;
 
   mapState.googleLoadingPromise = new Promise((resolve, reject) => {
+    const existing = document.querySelector('script[data-google-maps-loader="1"]');
+    if (existing && window.google?.maps?.Map) {
+      resolve(window.google.maps);
+      return;
+    }
+
+    const callbackName = '__deliveryAppGoogleMapsReady';
+    window[callbackName] = () => {
+      if (window.google?.maps?.Map) {
+        resolve(window.google.maps);
+      } else {
+        reject(new Error('Google Maps APIは読み込まれましたが Map クラスが見つかりません'));
+      }
+      try { delete window[callbackName]; } catch (_) { window[callbackName] = undefined; }
+    };
+
+    if (existing) {
+      return;
+    }
+
     const script = document.createElement('script');
-    script.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(apiKey)}&v=weekly&loading=async`;
+    script.dataset.googleMapsLoader = '1';
+    script.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(apiKey)}&v=weekly&loading=async&callback=${callbackName}`;
     script.async = true;
     script.defer = true;
-    script.onload = () => resolve(window.google.maps);
-    script.onerror = () => reject(new Error('Google Maps APIの読み込みに失敗しました'));
+    script.onerror = () => {
+      try { delete window[callbackName]; } catch (_) { window[callbackName] = undefined; }
+      reject(new Error('Google Maps APIの読み込みに失敗しました'));
+    };
     document.head.appendChild(script);
   });
 
