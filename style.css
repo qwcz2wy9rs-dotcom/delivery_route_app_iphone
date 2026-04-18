@@ -319,3 +319,6 @@ button:hover, .file-label:hover { opacity: 0.92; }
     flex-direction: column;
   }
 }
+
+
+.stop-note { line-height: 1.5; }

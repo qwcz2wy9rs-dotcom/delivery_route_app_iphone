@@ -64,30 +64,39 @@
             <input id="stopName" type="text" placeholder="例: 田中様宅" />
           </label>
           <label class="field">
+            <span>住所</span>
+            <input id="stopAddress" type="text" placeholder="例: 福岡県飯塚市◯◯ 1-2-3" />
+          </label>
+          <label class="field">
             <span>メモ</span>
             <input id="stopNote" type="text" placeholder="例: 玄関横ポスト / 階段あり" />
           </label>
           <div class="button-row wrap">
             <button id="addCurrentStopBtn">現在地で追加</button>
+            <button id="addAddressStopBtn">住所から追加</button>
             <button id="mapPickModeBtn" class="secondary">地図タップで追加</button>
           </div>
+          <p id="geocodeStatus" class="status"></p>
           <p id="pickModeStatus" class="status">地図タップ追加: OFF</p>
         </div>
 
         <div class="card">
           <h2>訪問管理</h2>
           <div class="button-row wrap">
+            <button id="guideNextStopBtn">次の未配達へ案内</button>
             <button id="undoDeliveryBtn" class="secondary">直前の配達を取り消す</button>
             <button id="resetDeliveryOrderBtn" class="danger">配達順をリセット</button>
           </div>
+          <p id="nextStopStatus" class="status">未配達の先頭順で案内できます</p>
           <div class="button-row wrap">
             <button id="saveBtn">端末に保存</button>
             <button id="exportBtn" class="secondary">現在ルートをJSON書き出し</button>
             <button id="exportLibraryBtn" class="secondary">保存済み一覧をJSON書き出し</button>
             <label class="file-label secondary">
-              JSON読み込み
+              ルートJSONを読み込み
               <input id="importInput" type="file" accept="application/json" />
             </label>
+            <button id="loadSelectedRouteBtn" class="secondary">選択中ルートを読み込み</button>
           </div>
         </div>
 
@@ -168,7 +177,8 @@
         <p class="saved-route-meta"></p>
       </div>
       <div class="button-row wrap compact">
-        <button class="show-route-btn">地図に表示</button>
+        <button class="load-route-btn">読み込み</button>
+        <button class="show-route-btn secondary">地図だけ表示</button>
         <button class="export-route-btn secondary">JSON</button>
         <button class="delete-route-btn danger">削除</button>
       </div>
