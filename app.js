@@ -434,6 +434,33 @@ async function geocodeAddress(address) {
   throw new Error('該当する住所が見つかりませんでした。郵便番号を外すか、丁目・番地を半角で入力してみてください');
 }
 
+function geocodeWithGeolonia(address) {
+  return new Promise((resolve, reject) => {
+    if (typeof window.getLatLng !== 'function') {
+      reject(new Error('Geolonia住所検索を読み込めませんでした'));
+      return;
+    }
+    window.getLatLng(address, (latlng) => {
+      if (!latlng || typeof latlng.lat === 'undefined' || typeof latlng.lng === 'undefined') {
+        reject(new Error('住所の座標を取得できませんでした'));
+        return;
+      }
+      resolve({
+        result: {
+          lat: latlng.lat,
+          lon: latlng.lng,
+          display_name: [latlng.pref, latlng.city, latlng.town, latlng.addr].filter(Boolean).join('')
+        },
+        usedQuery: address,
+        provider: 'geolonia',
+        raw: latlng
+      });
+    }, (error) => {
+      reject(error instanceof Error ? error : new Error(typeof error === 'string' ? error : '住所検索に失敗しました'));
+    });
+  });
+}
+
 async function addStopFromAddress() {
   const address = dom.stopAddress?.value.trim() || '';
   if (!address) {
@@ -446,15 +473,27 @@ async function addStopFromAddress() {
   setGeocodeStatus('住所を検索中…');
 
   try {
-    const { result, usedQuery } = await geocodeAddress(address);
-    const lat = Number(result.lat);
-    const lng = Number(result.lon);
+    let geocoded;
+    try {
+      geocoded = await geocodeWithGeolonia(address);
+    } catch (primaryError) {
+      console.warn('Geolonia geocoder failed, fallback to Nominatim', primaryError);
+      geocoded = await geocodeAddress(address);
+    }
+
+    const lat = Number(geocoded.result.lat);
+    const lng = Number(geocoded.result.lon);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+      throw new Error('住所の座標を取得できませんでした');
+    }
+
     addStop(lat, lng, dom.stopName.value.trim(), dom.stopNote.value.trim(), address);
     map.setView([lat, lng], 18);
     const marker = findMarkerByLatLng(lat, lng);
     if (marker) marker.openPopup();
-    const normalized = usedQuery && usedQuery !== address ? `（検索語: ${usedQuery}）` : '';
-    setGeocodeStatus(`住所から追加しました: ${address}${normalized}`);
+    const providerLabel = geocoded.provider === 'geolonia' ? 'Geolonia' : 'OpenStreetMap';
+    const normalized = geocoded.usedQuery && geocoded.usedQuery !== address ? `（検索語: ${geocoded.usedQuery}）` : '';
+    setGeocodeStatus(`住所から追加しました: ${address} / ${providerLabel}${normalized}`);
   } catch (error) {
     setGeocodeStatus(error.message || '住所検索に失敗しました');
     console.error(error);
