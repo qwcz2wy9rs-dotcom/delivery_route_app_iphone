@@ -1,4 +1,4 @@
-const STORAGE_KEY = 'delivery-route-app-state-v3';
+const STORAGE_KEY = 'delivery-route-app-state-v4';
 
 const state = {
   routeName: '',
@@ -440,7 +440,15 @@ function handleGpsError(error) {
   const help = location.protocol !== 'https:' && location.hostname !== 'localhost'
     ? ' / iPhoneではHTTPSで開いてください'
     : '';
-  setGpsStatus(`GPSエラー: ${error.message}${help}`);
+  const codeText = error && typeof error.code === 'number' ? ` (code: ${error.code})` : '';
+  const message = error?.message || '位置情報を取得できませんでした';
+  setGpsStatus(`GPSエラー: ${message}${codeText}${help}`);
+  console.error('GPS error detail', error);
+}
+
+function syncTrackButtons() {
+  const mobileBtn = document.getElementById('mobileStartTrackBtn');
+  if (mobileBtn) mobileBtn.textContent = state.tracking ? 'GPS停止' : 'GPS開始';
 }
 
 function startTracking() {
@@ -453,10 +461,11 @@ function startTracking() {
   state.tracking = true;
   state.watchId = navigator.geolocation.watchPosition(handlePosition, handleGpsError, {
     enableHighAccuracy: true,
-    maximumAge: 0,
-    timeout: 10000
+    maximumAge: 15000,
+    timeout: 20000
   });
   setGpsStatus('GPS: 起動中…');
+  syncTrackButtons();
 }
 
 function stopTracking() {
@@ -466,6 +475,7 @@ function stopTracking() {
     state.watchId = null;
   }
   setGpsStatus('GPS: 停止');
+  syncTrackButtons();
   renderAll();
 }
 
@@ -477,8 +487,8 @@ function getCurrentPositionOnce() {
     }
     navigator.geolocation.getCurrentPosition(resolve, reject, {
       enableHighAccuracy: true,
-      maximumAge: 0,
-      timeout: 10000
+      maximumAge: 15000,
+      timeout: 20000
     });
   });
 }
@@ -732,11 +742,9 @@ function bindEvents() {
   document.getElementById('mobileStartTrackBtn').addEventListener('click', () => {
     if (state.tracking) {
       stopTracking();
-      document.getElementById('mobileStartTrackBtn').textContent = 'GPS開始';
       return;
     }
     startTracking();
-    document.getElementById('mobileStartTrackBtn').textContent = 'GPS停止';
   });
 
   window.addEventListener('beforeunload', persist);
@@ -748,24 +756,24 @@ function bindEvents() {
   });
 }
 
-async function registerServiceWorker() {
+async function disableOldServiceWorkers() {
   if (!('serviceWorker' in navigator)) return;
-  if (location.protocol !== 'https:' && location.hostname !== 'localhost') return;
-
   try {
-    await navigator.serviceWorker.register('./sw.js');
+    const registrations = await navigator.serviceWorker.getRegistrations();
+    await Promise.all(registrations.map(r => r.unregister()));
   } catch (error) {
-    console.error('service worker registration failed', error);
+    console.error('service worker cleanup failed', error);
   }
 }
 
-function init() {
+async function init() {
   load();
   bindEvents();
   setInstallStatus();
+  syncTrackButtons();
   renderAll();
-  centerToCurrentPosition();
-  registerServiceWorker();
+  setGpsStatus('GPS: 「現在地表示」または「GPS開始」を押してください');
+  await disableOldServiceWorkers();
 }
 
 init();
