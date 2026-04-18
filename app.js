@@ -263,6 +263,30 @@ function deliveredStopsInOrder(stops = state.stops) {
     .sort((a, b) => a.deliveredOrder - b.deliveredOrder);
 }
 
+function supportsMapRotation() {
+  if (!mapState.ready || !mapState.map || !window.google?.maps?.RenderingType) return false;
+  return mapState.map.getRenderingType && mapState.map.getRenderingType() === google.maps.RenderingType.VECTOR;
+}
+
+function refreshRotationStatus() {
+  if (!mapState.ready || !mapState.map) return;
+  const heading = typeof mapState.map.getHeading === 'function' ? (mapState.map.getHeading() || 0) : 0;
+  if (supportsMapRotation()) {
+    setMapProviderStatus(`Google Maps: 2本指回転ON / 現在 ${Math.round(heading)}°`);
+    setMapHint('Google航空写真。2本指で回転・拡大できます');
+  } else {
+    setMapProviderStatus('Google Maps: この端末ではラスタ表示にフォールバック中。回転ジェスチャーは使えません');
+    setMapHint('Google航空写真。回転はベクターマップ対応端末で有効です');
+  }
+}
+
+function resetMapOrientation() {
+  if (!mapState.ready || !mapState.map) return;
+  if (typeof mapState.map.setHeading === 'function') mapState.map.setHeading(0);
+  if (typeof mapState.map.setTilt === 'function') mapState.map.setTilt(0);
+  refreshRotationStatus();
+}
+
 function updateMapTypeButtons() {
   const btns = [
     [dom.mapHybridBtn, 'hybrid'],
@@ -275,11 +299,11 @@ function updateMapTypeButtons() {
   });
 
   if (state.mapType === 'hybrid') {
-    setMapHint('Google航空写真 + ラベル');
+    setMapHint(supportsMapRotation() ? 'Google航空写真 + ラベル。2本指で回転・拡大できます' : 'Google航空写真 + ラベル');
   } else if (state.mapType === 'satellite') {
-    setMapHint('Google航空写真のみ');
+    setMapHint(supportsMapRotation() ? 'Google航空写真のみ。2本指で回転・拡大できます' : 'Google航空写真のみ');
   } else {
-    setMapHint('Google通常地図');
+    setMapHint(supportsMapRotation() ? 'Google通常地図。2本指で回転・拡大できます' : 'Google通常地図');
   }
 }
 
@@ -1080,6 +1104,9 @@ function setMapType(type) {
   if (mapState.ready) {
     mapState.map.setMapTypeId(type);
     mapState.map.setTilt(0);
+    if (typeof mapState.map.setHeadingInteractionEnabled === 'function') mapState.map.setHeadingInteractionEnabled(true);
+    if (typeof mapState.map.setTiltInteractionEnabled === 'function') mapState.map.setTiltInteractionEnabled(true);
+    refreshRotationStatus();
   }
   updateMapTypeButtons();
   persist();
@@ -1143,18 +1170,26 @@ async function initMap() {
       center,
       zoom: CONFIG.DEFAULT_ZOOM || 13,
       mapTypeId: state.mapType,
+      renderingType: google.maps.RenderingType.VECTOR,
+      headingInteractionEnabled: true,
+      tiltInteractionEnabled: true,
       streetViewControl: false,
       fullscreenControl: false,
       mapTypeControl: false,
-      rotateControl: false,
+      rotateControl: true,
       gestureHandling: 'greedy',
       tilt: 0,
+      heading: 0,
       clickableIcons: true,
       keyboardShortcuts: true
     });
 
     mapState.ready = true;
     mapState.infoWindow = new google.maps.InfoWindow();
+    if (typeof mapState.map.setHeadingInteractionEnabled === 'function') mapState.map.setHeadingInteractionEnabled(true);
+    if (typeof mapState.map.setTiltInteractionEnabled === 'function') mapState.map.setTiltInteractionEnabled(true);
+    mapState.map.addListener('heading_changed', refreshRotationStatus);
+    mapState.map.addListener('renderingtype_changed', refreshRotationStatus);
     mapState.clickListener = mapState.map.addListener('click', (event) => {
       if (!state.mapPickMode) return;
       addStop(event.latLng.lat(), event.latLng.lng(), dom.stopName.value.trim(), dom.stopNote.value.trim(), dom.stopAddress.value.trim());
@@ -1162,7 +1197,7 @@ async function initMap() {
     });
 
     updateMapTypeButtons();
-    setMapProviderStatus('Google Maps: 2D航空写真を使用中');
+    refreshRotationStatus();
     renderAll();
   } catch (error) {
     console.error(error);
@@ -1181,6 +1216,8 @@ function bindEvents() {
   document.getElementById('stopTrackBtn').addEventListener('click', stopTracking);
   document.getElementById('centerBtn').addEventListener('click', centerToCurrentPosition);
   document.getElementById('zoomRouteBtn').addEventListener('click', zoomToCurrentRoute);
+  document.getElementById('resetMapOrientationBtn').addEventListener('click', resetMapOrientation);
+  document.getElementById('mobileResetOrientationBtn').addEventListener('click', resetMapOrientation);
   document.getElementById('newRouteBtn').addEventListener('click', newRouteWorkspace);
   document.getElementById('addCurrentStopBtn').addEventListener('click', addStopFromCurrentLocation);
   document.getElementById('addAddressStopBtn').addEventListener('click', addStopFromAddress);
