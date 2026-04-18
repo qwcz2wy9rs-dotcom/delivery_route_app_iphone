@@ -355,12 +355,50 @@ function addStop(lat, lng, name, note, address = '') {
   renderAll();
 }
 
-async function geocodeAddress(address) {
+function toHalfWidth(value) {
+  return (value || '')
+    .replace(/[！-～]/g, ch => String.fromCharCode(ch.charCodeAt(0) - 0xFEE0))
+    .replace(/　/g, ' ');
+}
+
+function normalizeJapaneseAddress(address) {
+  let s = toHalfWidth(address || '').trim();
+  s = s.replace(/〒\s*/g, '');
+  s = s.replace(/[ー−‐―ｰ]/g, '-');
+  s = s.replace(/\b(\d{3})-(\d{4})\b/g, '$1-$2');
+  s = s.replace(/\b(\d{3})(\d{4})\b/g, '$1-$2');
+  s = s.replace(/\s+/g, ' ');
+  return s;
+}
+
+function buildAddressQueries(address) {
+  const normalized = normalizeJapaneseAddress(address);
+  const queries = [];
+  const seen = new Set();
+
+  const add = value => {
+    const q = (value || '').trim();
+    if (!q || seen.has(q)) return;
+    seen.add(q);
+    queries.push(q);
+  };
+
+  add(normalized);
+  add(normalized.replace(/^\d{3}-\d{4}\s*/, ''));
+  add(normalized.replace(/\d{3}-\d{4}/g, '').replace(/\s+/g, ' ').trim());
+  add(normalized.replace(/県/g, '県 ').replace(/市/g, '市 ').replace(/区/g, '区 ').replace(/町/g, '町 ').replace(/村/g, '村 ').replace(/\s+/g, ' ').trim());
+  add(normalized.replace(/-/g, ' '));
+
+  return queries;
+}
+
+async function fetchGeocode(query) {
   const url = new URL('https://nominatim.openstreetmap.org/search');
   url.searchParams.set('format', 'jsonv2');
   url.searchParams.set('limit', '5');
   url.searchParams.set('countrycodes', 'jp');
-  url.searchParams.set('q', address);
+  url.searchParams.set('accept-language', 'ja');
+  url.searchParams.set('q', query);
 
   const response = await fetch(url.toString(), {
     headers: {
@@ -372,12 +410,28 @@ async function geocodeAddress(address) {
     throw new Error(`住所検索に失敗しました (${response.status})`);
   }
 
-  const data = await response.json();
-  if (!Array.isArray(data) || data.length === 0) {
-    throw new Error('該当する住所が見つかりませんでした');
+  return response.json();
+}
+
+async function geocodeAddress(address) {
+  const queries = buildAddressQueries(address);
+  let lastError = null;
+
+  for (const query of queries) {
+    try {
+      const data = await fetchGeocode(query);
+      if (Array.isArray(data) && data.length > 0) {
+        return { result: data[0], usedQuery: query };
+      }
+    } catch (error) {
+      lastError = error;
+    }
   }
 
-  return data[0];
+  if (lastError) {
+    throw lastError;
+  }
+  throw new Error('該当する住所が見つかりませんでした。郵便番号を外すか、丁目・番地を半角で入力してみてください');
 }
 
 async function addStopFromAddress() {
@@ -392,14 +446,15 @@ async function addStopFromAddress() {
   setGeocodeStatus('住所を検索中…');
 
   try {
-    const result = await geocodeAddress(address);
+    const { result, usedQuery } = await geocodeAddress(address);
     const lat = Number(result.lat);
     const lng = Number(result.lon);
     addStop(lat, lng, dom.stopName.value.trim(), dom.stopNote.value.trim(), address);
     map.setView([lat, lng], 18);
     const marker = findMarkerByLatLng(lat, lng);
     if (marker) marker.openPopup();
-    setGeocodeStatus(`住所から追加しました: ${address}`);
+    const normalized = usedQuery && usedQuery !== address ? `（検索語: ${usedQuery}）` : '';
+    setGeocodeStatus(`住所から追加しました: ${address}${normalized}`);
   } catch (error) {
     setGeocodeStatus(error.message || '住所検索に失敗しました');
     console.error(error);
